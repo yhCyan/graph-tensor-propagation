@@ -163,12 +163,12 @@ class SemanLCGN(nn.Module):
         self.mem_update = ops.Linear(2*cfg.CTX_DIM, cfg.CTX_DIM)
         self.combine_kb = ops.Linear(2*cfg.CTX_DIM, cfg.CTX_DIM)
 
-    def forward(self, images, transformer_outputs, batch_size,
+    def forward(self, images, seman_outputs, batch_size,
                 entity_num):
         x_loc, x_ctx, x_ctx_var_drop = self.loc_ctx_init(images)
         for t in range(cfg.MSG_ITER_NUM):
             x_ctx = self.run_message_passing_iter(
-                transformer_outputs, x_loc, x_ctx,
+                seman_outputs, x_loc, x_ctx,
                 x_ctx_var_drop, entity_num, t)
         x_out = self.combine_kb(torch.cat([x_loc, x_ctx], dim=-1))
         return x_out
@@ -200,10 +200,10 @@ class SemanLCGN(nn.Module):
         return x_ctx_new
 
     def run_message_passing_iter(
-            self, transformer_outputs, x_loc, x_ctx,
+            self, seman_outputs, x_loc, x_ctx,
             x_ctx_var_drop, entity_num, t):
         cmd = self.extract_textual_command(
-                transformer_outputs, t)
+                seman_outputs, t)
         x_ctx = self.propagate_message(
             cmd, x_loc, x_ctx, x_ctx_var_drop, entity_num)
         return x_ctx

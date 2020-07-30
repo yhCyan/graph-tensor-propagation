@@ -4,6 +4,8 @@ import torch.nn.functional as F
 import numpy as np
 
 from .config import cfg
+from . import ops as ops
+
 
 def apply_mask1d(attention, image_locs):
     batch_size, num_loc = attention.size()
@@ -73,27 +75,27 @@ class GatedTrans(nn.Module):
     def forward(self, x_in):
         x_y = self.embed_y(x_in)
         x_g = self.embed_g(x_in)
-        x_out = x_y*x_g
+        x_out = x_y * x_g
 
         return x_out
 
 
-class Q_ATT(nn.Module):
+class Self_Att(nn.Module):
     """Self attention module of questions."""
-    def __init__(self, config):
-        super(Q_ATT, self).__init__()
+    def __init__(self):
+        super(Self_Att, self).__init__()
 
         self.embed = nn.Sequential(
-            nn.Dropout(p=config["dropout_fc"]),
+            nn.Dropout(p=cfg["dropout_fc"]),
             GatedTrans(
-                config["lstm_hidden_size"]*2,
-                config["lstm_hidden_size"]
+                cfg["CMD_DIM"],
+                cfg["WRD_EMB_DIM"]
             ),
         )        
         self.att = nn.Sequential(
-            nn.Dropout(p=config["dropout_fc"]),
+            nn.Dropout(p=cfg["dropout_fc"]),
             nn.Linear(
-                config["lstm_hidden_size"],
+                cfg["WRD_EMB_DIM"],
                 1
             )
         )
@@ -105,24 +107,23 @@ class Q_ATT(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias.data, 0)
 
-    def forward(self, ques_word, ques_word_encoded, ques_not_pad):
+    def forward(self, word, word_encoded, word_not_pad):
         # ques_word shape: (batch_size, num_rounds, quen_len_max, word_embed_dim)
         # ques_embed shape: (batch_size, num_rounds, quen_len_max, lstm_hidden_size * 2)
         # ques_not_pad shape: (batch_size, num_rounds, quen_len_max)
         # output: img_att (batch_size, num_rounds, embed_dim)
-        batch_size = ques_word.size(0)
-        num_rounds = ques_word.size(1)
-        quen_len_max = ques_word.size(2)
+        batch_size = word.size(0)
+        len_max = word.size(1)
 
-        ques_embed = self.embed(ques_word_encoded) # shape: (batch_size, num_rounds, quen_len_max, embed_dim)
-        ques_norm = F.normalize(ques_embed, p=2, dim=-1) # shape: (batch_size, num_rounds, quen_len_max, embed_dim) 
+        word_embed = self.embed(word_encoded) # shape: (batch_size, num_rounds, quen_len_max, embed_dim)
+        word_norm = F.normalize(word_embed, p=2, dim=-1) # shape: (batch_size, num_rounds, quen_len_max, embed_dim) 
         
-        att = self.att(ques_norm).squeeze(-1) # shape: (batch_size, num_rounds, quen_len_max)
+        att = self.att(word_norm).squeeze(-1) # shape: (batch_size, num_rounds, quen_len_max)
         # ignore <pad> word
         att = self.softmax(att)
-        att = att*ques_not_pad # shape: (batch_size, num_rounds, quen_len_max)
+        att = att * word_not_pad # shape: (batch_size, num_rounds, quen_len_max)
         att = att / torch.sum(att, dim=-1, keepdim=True) # shape: (batch_size, num_rounds, quen_len_max)
-        feat = torch.sum(att.unsqueeze(-1) * ques_word, dim=-2) # shape: (batch_size, num_rounds, rnn_dim)
+        feat = torch.sum(att.unsqueeze(-1) * word, dim=-2) # shape: (batch_size, num_rounds, rnn_dim)
         
         return feat, att
 
@@ -138,7 +139,9 @@ class Encoder(nn.Module):
 
         self.enc_seman_drop = nn.Dropout(1 - cfg.qDropout)
 
-        self.transformer = Transformer()
+        #self.transformer = Transformer()
+        self.w_encode = ops.Linear(cfg.WRD_EMB_DIM, cfg.CMD_DIM)
+        self.Self_Att = Self_Att()
 
     def forward(self, qIndices, questionLengths, semanIndices, semanLengths):
         # Word embedding
@@ -156,8 +159,11 @@ class Encoder(nn.Module):
         questionCntxWords, vecQuestions = self.rnn0(questions, questionLengths) #128 * 30 * 512 128 * 512
         vecQuestions = self.question_drop(vecQuestions)
 
-        # Transformer
-        semanCnt = self.transformer(semans, semanLengths)
+        # self-attention
+        seman_not_pad = (semanIndices != 0).float()
+        seman_encoded = self.w_encode(semans)
+        semanCnt, att = self.Self_Att(semans, seman_encoded, seman_not_pad)
+        #semanCnt = self.transformer(semans, semanLengths)
 
         return questionCntxWords, vecQuestions, semanCnt
 

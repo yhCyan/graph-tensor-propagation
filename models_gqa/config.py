@@ -19,26 +19,29 @@ __C.GPUS = '0'
 __C.n_gpus = 2
 __C.nodes = 1
 __C.nr = 0
-__C.fp16 = True
+__C.fp16 = False
 __C.fp16_opt_level = "O1"
-__C.SNAPSHOT_FILE = '/home/xdjf/lcgn-pytorch/exp_gqa/pytorch_ckpt/%s/%04d.ckpt'
+__C.warmup_steps = 0
+__C.logging_steps = 500
+__C.weight_decay = 1e-2
+__C.SNAPSHOT_FILE = '/home/xdjf/graph-tensor-propagation/exp_gqa/pytorch_ckpt/%s/%04d.ckpt'
 
-__C.VOCAB_QUESTION_FILE = '/home/xdjf/lcgn-pytorch/exp_gqa/data/vocabulary_gqa.txt'
-__C.VOCAB_ANSWER_FILE = '/home/xdjf/lcgn-pytorch/exp_gqa/data/answers_gqa.txt'
-__C.IMDB_FILE = '/home/xdjf/lcgn-pytorch/exp_gqa/gqa_dataset/questions/%s_questions.json'
-__C.IMAGE_DIR = '/home/xdjf/lcgn-pytorch/exp_gqa/gqa_dataset/images'
-__C.SPATIAL_FEATURE_DIR = '/home/xdjf/lcgn-pytorch/exp_gqa/gqa_dataset/spatial'
-__C.OBJECTS_FEATURE_DIR = '/home/xdjf/lcgn-pytorch/exp_gqa/gqa_dataset/objects'
+__C.VOCAB_QUESTION_FILE = '/home/xdjf/graph-tensor-propagation/exp_gqa/data/vocabulary_gqa.txt'
+__C.VOCAB_ANSWER_FILE = '/home/xdjf/graph-tensor-propagation/exp_gqa/data/answers_gqa.txt'
+__C.IMDB_FILE = '/home/xdjf/graph-tensor-propagation/exp_gqa/gqa_dataset/questions/%s_questions.json'
+__C.IMAGE_DIR = '/home/xdjf/graph-tensor-propagation/exp_gqa/gqa_dataset/images'
+__C.SPATIAL_FEATURE_DIR = '/home/xdjf/graph-tensor-propagation/exp_gqa/gqa_dataset/spatial'
+__C.OBJECTS_FEATURE_DIR = '/home/xdjf/graph-tensor-propagation/exp_gqa/gqa_dataset/objects'
 
 # __C.USE_SPATIAL_FEATURE = False
 __C.FEAT_TYPE = 'objects'  # 'spatial', 'objects' or 'scene_graph'
 # options for "perfect-sight training with ground-truth names & attrs"
-__C.SCENE_GRAPH_FILE = '/home/xdjf/lcgn-pytorch/exp_gqa/gqa_dataset/sceneGraphs/%s_sceneGraphs.json'  # NoQA
-__C.VOCAB_NAME_FILE = '/home/xdjf/lcgn-pytorch/exp_gqa/data/name_gqa.txt'
-__C.VOCAB_ATTR_FILE = '/home/xdjf/lcgn-pytorch/exp_gqa/data/attr_gqa.txt'
+__C.SCENE_GRAPH_FILE = '/home/xdjf/graph-tensor-propagation/exp_gqa/gqa_dataset/sceneGraphs/%s_sceneGraphs.json'  # NoQA
+__C.VOCAB_NAME_FILE = '/home/xdjf/graph-tensor-propagation/exp_gqa/data/name_gqa.txt'
+__C.VOCAB_ATTR_FILE = '/home/xdjf/graph-tensor-propagation/exp_gqa/data/attr_gqa.txt'
 
 __C.INIT_WRD_EMB_FROM_FILE = True
-__C.WRD_EMB_INIT_FILE = '/home/xdjf/lcgn-pytorch/exp_gqa/data/gloves_gqa_no_pad.npy'
+__C.WRD_EMB_INIT_FILE = '/home/xdjf/graph-tensor-propagation/exp_gqa/data/gloves_gqa_no_pad.npy'
 
 # --------------------------------------------------------------------------- #
 # model options
@@ -82,7 +85,7 @@ __C.qDropout = 0.92
 __C.memoryDropout = 0.85
 __C.readDropout = 0.85
 __C.outputDropout = 0.85
-
+__C.dropout_fc = 0.3
 __C.MASK_PADUNK_IN_LOGITS = True
 
 # --------------------------------------------------------------------------- #
@@ -101,16 +104,16 @@ __C.TRAIN.SOLVER.LR_DECAY = 1.
 __C.TRAIN.MAX_EPOCH = 25
 __C.TRAIN.RUN_EVAL = True
 __C.TRAIN.EVAL_MAX_NUM = 0  # 0 means no limit
-
+__C.adam_epsilon = 1e-8
 # --------------------------------------------------------------------------- #
 # test options
 # --------------------------------------------------------------------------- #
 __C.TEST = AttrDict()
 __C.TEST.SPLIT_VQA = 'val_balanced'
 __C.TEST.BATCH_SIZE = 128
-__C.TEST.EPOCH = -1  # Needs to be supplied
+__C.TEST.EPOCH = 24  # Needs to be supplied
 __C.TEST.DUMP_PRED = False
-__C.TEST.RESULT_DIR = '/home/xdjf/lcgn-pytorch/exp_gqa/results/%s/%04d'
+__C.TEST.RESULT_DIR = '/home/xdjf/graph-tensor-propagation/exp_gqa/results/%s/%04d'
 
 __C.TEST.NUM_VIS = 0
 __C.TEST.VIS_DIR_PREFIX = 'vis'

@@ -11,7 +11,7 @@ from .config import cfg
 from .lcgn import LCGN, SemanLCGN
 from .input_unit import Encoder
 from .output_unit import Classifier
-
+from .optimization import *
 
 class SingleHop(nn.Module):
     def __init__(self):
@@ -49,22 +49,15 @@ class LCGNnet(nn.Module):
         self.conv1d = nn.Conv1d(cfg.CMD_DIM, out_channels=cfg.CMD_DIM, kernel_size=4)
 
     def forward(self, batch):
-        batchSize = len(batch['image_feat_batch'])
-        questionIndices = torch.from_numpy(
-            batch['input_seq_batch'].astype(np.int64)).cuda() # 128 * 30
-        questionLengths = torch.from_numpy(
-            batch['seq_length_batch'].astype(np.int64)).cuda() # 128
-        semanIndices = torch.from_numpy(
-            batch['input_seman_batch'].astype(np.int64)).cuda() # 128 * 30
-        semanLengths = torch.from_numpy(
-            batch['seman_length_batch'].astype(np.int64)).cuda() # 128
-        answerIndices = torch.from_numpy(
-            batch['answer_label_batch'].astype(np.int64)).cuda() # 128
-        images = torch.from_numpy(
-            batch['image_feat_batch'].astype(np.float32)).cuda() # 128 * 49 * 2112
-        imagesObjectNum = torch.from_numpy(
-            np.sum(batch['image_valid_batch'].astype(np.int64), axis=1)).cuda() # 128
-
+        #batchSize = len(batch['image_feat_batch'])
+        questionIndices = batch[0]
+        questionLengths = batch[1]
+        semanIndices = batch[2]
+        semanLengths = batch[3]
+        answerIndices = batch[4]
+        images = batch[5]
+        imagesObjectNum = batch[6]
+        batchSize = images.size(0)
         # LSTM
         questionCntxWords, vecQuestions, semanCnt = self.encoder(
             questionIndices, questionLengths, # 128 * 30 * 512 128 * 512
@@ -76,12 +69,12 @@ class LCGNnet(nn.Module):
             lstm_outputs=questionCntxWords, batch_size=batchSize,
             q_length=questionLengths, entity_num=imagesObjectNum)
 
-        semanCnt = semanCnt.permute(1, 0, 2)
-        semanCnt = semanCnt[:, 0, :]
+        # semanCnt = semanCnt.permute(1, 0, 2)
+        # semanCnt = semanCnt[:, 0, :]
         semanCnt = self.seman_encoder(semanCnt)
 
         x_out_seman = self.sema_lcgn(
-            images=images, transformer_outputs=semanCnt,
+            images=images, seman_outputs=semanCnt,
             batch_size=batchSize, entity_num=imagesObjectNum)
 
         x_out = self.tensor_inter_graph_propagation(x_out, x_out_seman)
@@ -131,7 +124,7 @@ class LCGNnet(nn.Module):
         preds = torch.argmax(logits, dim=-1).detach() # 128
         corrects = (preds == answers)
         correctNum = torch.sum(corrects).item()
-        preds = preds.cpu().numpy()
+        preds = preds.cpu()#.numpy()
 
         return preds, correctNum
 
@@ -148,26 +141,37 @@ class LCGNnet(nn.Module):
 
 
 class LCGNwrapper():
-    def __init__(self, num_vocab, num_choices, cfg=None, rank=-1, gpu=-1):
+    def __init__(self, num_vocab, num_choices, cfg=None, rank=-1, gpu=0):
 
-        if gpu != -1:
-            torch.cuda.set_device(gpu)
-            self.model = LCGNnet(num_vocab, num_choices).cuda(gpu)
-            self.trainable_params = [
-                p for p in self.model.parameters() if p.requires_grad]
-            self.optimizer = torch.optim.Adam(
-                 self.trainable_params, lr=cfg.TRAIN.SOLVER.LR)
-            if cfg.fp16:
-                self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level=cfg.fp16_opt_level)
-            self.model = nn.parallel.DistributedDataParallel(self.model,
-                                                             device_ids=[gpu], output_device=gpu, find_unused_parameters=True)
-            
-        else:
-            self.model = LCGNnet(num_vocab, num_choices).cuda()
-            self.trainable_params = [
-                p for p in self.model.parameters() if p.requires_grad]
-            self.optimizer = torch.optim.Adam(
+        self.no_decay = ['bias']
+
+        torch.cuda.set_device(gpu)
+        self.model = LCGNnet(num_vocab, num_choices).cuda(gpu)
+
+        self.trainable_params = [
+            {
+                "params": [p for n, p in self.model.named_parameters() if p.requires_grad and not any(nd in n for nd in self.no_decay)],
+                "weight_decay": cfg.weight_decay,
+            },
+            {
+                "params": [p for n, p in self.model.named_parameters() if p.requires_grad and any(nd in n for nd in self.no_decay)],
+                "weight_decay": 0.0
+            }
+        ]
+        
+        self.optimizer = torch.optim.AdamW(
                 self.trainable_params, lr=cfg.TRAIN.SOLVER.LR)
+        #self.optimizer = AdamW(self.trainable_params, lr=cfg.TRAIN.SOLVER.LR, eps=cfg.adam_epsilon)
+        total_step = int(943000 / cfg.n_gpus // cfg.TRAIN.BATCH_SIZE + 1) * cfg.TRAIN.MAX_EPOCH
+        self.scheduler = get_linear_schedule_with_warmup(
+                                                self.optimizer, num_warmup_steps=cfg.warmup_steps, num_training_steps=total_step)
+        if cfg.fp16:
+            self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level=cfg.fp16_opt_level)
+
+        if cfg.n_gpus > 1:
+            self.model = nn.parallel.DistributedDataParallel(self.model,
+                                                                device_ids=[gpu], output_device=gpu, find_unused_parameters=True)
+
 
         self.lr = cfg.TRAIN.SOLVER.LR
         self.fp16 = cfg.fp16
@@ -269,8 +273,10 @@ class LCGNwrapper():
                     torch.nn.utils.clip_grad_norm_(amp.master_params(self.optimizer), cfg.TRAIN.GRAD_MAX_NORM)
                 else:
                     nn.utils.clip_grad_norm_(
-                        self.trainable_params, cfg.TRAIN.GRAD_MAX_NORM)
+                        self.model.parameters(), cfg.TRAIN.GRAD_MAX_NORM)
             self.optimizer.step()
+            self.scheduler.step()
+            batch_res['lr'] = self.scheduler.get_lr()[0]
             if cfg.USE_EMA:
                 self.ema.step(self.ema_param_dict)
         else:
