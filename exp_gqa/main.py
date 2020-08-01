@@ -26,6 +26,7 @@ from util.gqa_train.data_reader import DataReader
 #os.environ["CUDA_VISIBLE_DEVICES"] = cfg.GPUS
 # if len(cfg.GPUS.split(',')) > 1:
 #     print('PyTorch implementation currently only supports single GPU')
+import wandb
 
 
 def load_train_data(cfg, rank, gpu, max_num=0, num_replicas=1):
@@ -82,10 +83,9 @@ def run_train_on_data(model, data_reader_train, cfg, rank, gpu, run_eval=False,
     correct, total, loss_sum, batch_num = 0, 0, 0., 0
     tr_loss, logging_loss = 0.0, 0.0
 
-    if rank in [-1, 0]:
-        tb_writer = SummaryWriter()
+    # if rank in [-1, 0]:
+    #     tb_writer = SummaryWriter()
     
-    first = True
     for batch, n_sample, e in data_reader_train.batches(one_pass=False):
         n_epoch = cfg.TRAIN.START_EPOCH + e
         if n_sample == 0 and n_epoch > cfg.TRAIN.START_EPOCH and rank in [-1, 0]:
@@ -96,8 +96,10 @@ def run_train_on_data(model, data_reader_train, cfg, rank, gpu, run_eval=False,
             # run evaluation
             if run_eval:
                 batch_eval = run_eval_on_data(cfg, model, data_reader_eval)
-                tb_writer.add_scalar("eval_loss", batch_eval['loss'], global_step)
+                #tb_writer.add_scalar("eval_loss", batch_eval['loss'], global_step)
                 model.train()
+            if cfg.DEBUG == False:
+                wandb.log({"eval_loss": batch_eval['loss'], "eval_correct": batch_eval['accuracy']})
             # clear stats
             correct, total, loss_sum, batch_num = 0, 0, 0., 0
         if n_epoch >= cfg.TRAIN.MAX_EPOCH:
@@ -116,17 +118,18 @@ def run_train_on_data(model, data_reader_train, cfg, rank, gpu, run_eval=False,
         batch_num += 1
         global_step += 1
 
-        if rank in [-1, 0] and cfg.logging_steps > 0 and global_step % cfg.logging_steps == 0:
-            tb_writer.add_scalar("lr", batch_res['lr'], global_step)
-            tb_writer.add_scalar("loss", (tr_loss - logging_loss) / cfg.logging_steps, global_step)
+        if rank in [-1, 0] and cfg.logging_steps > 0 and global_step % cfg.logging_steps == 0 and cfg.DEBUG == False:
+            wandb.log({"lr": batch_res['lr'], "train_loss": loss_sum/batch_num, "train_correct": correct/total})
+            # tb_writer.add_scalar("lr", batch_res['lr'], global_step)
+            # tb_writer.add_scalar("loss", (tr_loss - logging_loss) / cfg.logging_steps, global_step)
 
         if rank in [-1, 0]:
             print('\rTrain E %d S %d: avgL=%.4f, avgA=%.4f, lr=%.1e' % (
                     n_epoch+1, total, loss_sum/batch_num, correct/total, lr),
                 end='')
 
-    if rank in [-1, 0]:
-        tb_writer.close()
+    # if rank in [-1, 0]:
+    #     tb_writer.close()
 
 
 def load_eval_data(cfg, rank, gpu, max_num=0):
@@ -209,8 +212,11 @@ def train(gpu, cfg):
     	world_size=cfg.world_size,                              
     	rank=rank                                               
         )  
+    if rank in [-1, 0, 1]:
+        gpu = 0
+    elif rank in [2, 3]:
         gpu = 1
-    gpu = 0
+    
     set_seed(cfg)
 
     print(f'rank: {rank} pid: {os.getpid()} is running...')
@@ -220,9 +226,13 @@ def train(gpu, cfg):
     # Load model
 
     model = LCGNwrapper(num_vocab, num_choices, cfg=cfg, rank=rank, gpu=gpu)
-
     # Save snapshot
     if rank in [-1, 0]:
+        if cfg.DEBUG == False:
+            from wandb import magic
+            wandb.init(project="gtp", notes="graph tensor propa", sync_tensorboard=True, name="zyh-8-1-2020")
+            wandb.watch(model.model, log="all")
+            wandb.config.update(cfg)
         snapshot_dir = os.path.dirname(cfg.SNAPSHOT_FILE % (cfg.EXP_NAME, 0))
         os.makedirs(snapshot_dir, exist_ok=True)
         with open(os.path.join(snapshot_dir, 'cfg.json'), 'w') as f:
@@ -288,6 +298,8 @@ if __name__ == '__main__':
             os.environ["CUDA_VISIBLE_DEVICES"] = cfg.GPUS
             train(-1, cfg)
         end_ = time.time()
+        if cfg.DEBUG == False:
+            wandb.log({"training time": int((end_ - start) / 60)})
         print(f'time has cost : {end_ - start}')
     else:
         test(cfg)

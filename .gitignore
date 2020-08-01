@@ -41,3 +41,4 @@ tes*
 start_train.py
 *.md
 
+wandb/*

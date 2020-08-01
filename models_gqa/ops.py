@@ -54,7 +54,7 @@ class ExponentialMovingAverage():
 
     def step(self, param_dict):
         for name, p in param_dict.items():
-            self.params_ema[name].mul_(self.decay).add_(1-self.decay, p.data)
+            self.params_ema[name].mul_(self.decay).add_(p.data, alpha=1-self.decay)
 
     def state_dict(self):
         return self.params_ema

@@ -24,6 +24,7 @@ __C.fp16_opt_level = "O1"
 __C.warmup_steps = 0
 __C.logging_steps = 500
 __C.weight_decay = 1e-2
+__C.DEBUG = False # when want to debug the programe, can set the flag to True
 __C.SNAPSHOT_FILE = '/home/xdjf/graph-tensor-propagation/exp_gqa/pytorch_ckpt/%s/%04d.ckpt'
 
 __C.VOCAB_QUESTION_FILE = '/home/xdjf/graph-tensor-propagation/exp_gqa/data/vocabulary_gqa.txt'
@@ -55,7 +56,7 @@ __C.ADD_POS_ENC = True
 __C.PE_DIM = 64
 __C.PE_SCALE = 1.
 
-__C.MSG_ITER_NUM = 4
+__C.MSG_ITER_NUM = 2
 
 __C.STEM_NORMALIZE = True
 __C.STEM_LINEAR = True
@@ -151,7 +152,7 @@ def build_cfg_from_argparse(args_list=None):
 def _merge_cfg_from_file(cfg_filename):
     """Load a yaml config file and merge it into the global config."""
     with open(cfg_filename, 'r') as f:
-        yaml_cfg = yaml.load(f)
+        yaml_cfg = yaml.load(f, Loader=yaml.FullLoader)
     if yaml_cfg is not None:
         _merge_a_into_b(AttrDict(yaml_cfg), __C)
     if __C.EXP_NAME == '<fill-with-filename>':

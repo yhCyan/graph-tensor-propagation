@@ -5,6 +5,7 @@ from torch import nn
 import torch.nn.functional as F
 import numpy as np
 from apex import amp
+from torch.cuda.amp import autocast as autocast
 
 from . import ops as ops
 from .config import cfg
@@ -42,11 +43,10 @@ class LCGNnet(nn.Module):
         self.num_choices = num_choices # 1845
         self.encoder = Encoder(embeddingsInit)
         self.lcgn = LCGN()
-        self.sema_lcgn = SemanLCGN()
+        #self.sema_lcgn = SemanLCGN()
         self.single_hop = SingleHop()
         self.classifier = Classifier(num_choices)
-        self.seman_encoder = ops.Linear(cfg.WRD_EMB_DIM, cfg.CMD_DIM)
-        self.conv1d = nn.Conv1d(cfg.CMD_DIM, out_channels=cfg.CMD_DIM, kernel_size=4)
+        #self.seman_encoder = ops.Linear(cfg.WRD_EMB_DIM, cfg.CMD_DIM)
 
     def forward(self, batch):
         #batchSize = len(batch['image_feat_batch'])
@@ -59,25 +59,26 @@ class LCGNnet(nn.Module):
         imagesObjectNum = batch[6]
         batchSize = images.size(0)
         # LSTM
-        questionCntxWords, vecQuestions, semanCnt = self.encoder(
+        questionCntxWords, vecQuestions, word_seman, encode_seman = self.encoder(
             questionIndices, questionLengths, # 128 * 30 * 512 128 * 512
             semanIndices, semanLengths) 
 
+        encode_seman = encode_seman.permute(1, 0, 2)
+        #encode_seman = self.seman_encoder(encode_seman)
+        # semanCnt = semanCnt[:, 0, :]
         # LCGN
         x_out = self.lcgn(
             images=images, q_encoding=vecQuestions,
-            lstm_outputs=questionCntxWords, batch_size=batchSize,
+            lstm_outputs=questionCntxWords, word_seman=word_seman, encode_seman=encode_seman, semanIndices=semanIndices, batch_size=batchSize,
             q_length=questionLengths, entity_num=imagesObjectNum)
 
-        # semanCnt = semanCnt.permute(1, 0, 2)
-        # semanCnt = semanCnt[:, 0, :]
-        semanCnt = self.seman_encoder(semanCnt)
+        
 
-        x_out_seman = self.sema_lcgn(
-            images=images, seman_outputs=semanCnt,
-            batch_size=batchSize, entity_num=imagesObjectNum)
+        # x_out_seman = self.sema_lcgn(
+        #     images=images, seman_outputs=semanCnt,
+        #     batch_size=batchSize, entity_num=imagesObjectNum)
 
-        x_out = self.tensor_inter_graph_propagation(x_out, x_out_seman)
+        # x_out = self.tensor_inter_graph_propagation(x_out, x_out_seman)
         # Single-Hop
         x_att = self.single_hop(x_out, vecQuestions, imagesObjectNum)
         logits = self.classifier(x_att, vecQuestions) # 128 * 1845
@@ -143,7 +144,7 @@ class LCGNnet(nn.Module):
 class LCGNwrapper():
     def __init__(self, num_vocab, num_choices, cfg=None, rank=-1, gpu=0):
 
-        self.no_decay = ['bias']
+        self.no_decay = ['bias', 'norm']
 
         torch.cuda.set_device(gpu)
         self.model = LCGNnet(num_vocab, num_choices).cuda(gpu)
@@ -166,7 +167,8 @@ class LCGNwrapper():
         self.scheduler = get_linear_schedule_with_warmup(
                                                 self.optimizer, num_warmup_steps=cfg.warmup_steps, num_training_steps=total_step)
         if cfg.fp16:
-            self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level=cfg.fp16_opt_level)
+            self.scaler = torch.cuda.amp.GradScaler()
+            #self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level=cfg.fp16_opt_level)
 
         if cfg.n_gpus > 1:
             self.model = nn.parallel.DistributedDataParallel(self.model,
@@ -261,22 +263,34 @@ class LCGNwrapper():
                     param_group['lr'] = lr
                 self.lr = lr
             self.optimizer.zero_grad()
-            batch_res = self.model.forward(batch)
+            if cfg.fp16:
+                with autocast():
+                    batch_res = self.model.forward(batch)
+            else:
+                batch_res = self.model.forward(batch)
             loss = batch_res['loss']
             if self.fp16:
-                with amp.scale_loss(loss, self.optimizer) as scaled_loss:
-                    scaled_loss.backward()
+                self.scaler.scale(loss).backward()
+                # with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                #     scaled_loss.backward()
             else:
                 loss.backward()
             if cfg.TRAIN.CLIP_GRADIENTS:
                 if self.fp16:
-                    torch.nn.utils.clip_grad_norm_(amp.master_params(self.optimizer), cfg.TRAIN.GRAD_MAX_NORM)
+                    self.scaler.unscale_(self.optimizer)
+                    nn.utils.clip_grad_norm_(
+                        self.model.parameters(), cfg.TRAIN.GRAD_MAX_NORM)
+                    #torch.nn.utils.clip_grad_norm_(amp.master_params(self.optimizer), cfg.TRAIN.GRAD_MAX_NORM)
                 else:
                     nn.utils.clip_grad_norm_(
                         self.model.parameters(), cfg.TRAIN.GRAD_MAX_NORM)
-            self.optimizer.step()
+            if cfg.fp16:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
             self.scheduler.step()
-            batch_res['lr'] = self.scheduler.get_lr()[0]
+            batch_res['lr'] = self.scheduler.get_last_lr()[0]
             if cfg.USE_EMA:
                 self.ema.step(self.ema_param_dict)
         else:

@@ -44,88 +44,12 @@ class Transformer(nn.Module):
         
         return mask
 
-    def forward(self, x_emb, x_length):
+    def forward(self, x_emb):
         #mask = self._generate_square_subsequent_mask(x_length)
         #mask = mask.cuda()
         x_emb = x_emb.permute(1, 0, 2)
         output = self.transformer_encoder(x_emb)
         return output
-
-
-class GatedTrans(nn.Module):
-    """docstring for GatedTrans"""
-    def __init__(self, in_dim, out_dim):
-        super(GatedTrans, self).__init__()
-        
-        self.embed_y = nn.Sequential(
-            nn.Linear(
-                in_dim,
-                out_dim
-            ),
-            nn.Tanh()
-        )
-        self.embed_g = nn.Sequential(
-            nn.Linear(
-                in_dim,
-                out_dim
-            ),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x_in):
-        x_y = self.embed_y(x_in)
-        x_g = self.embed_g(x_in)
-        x_out = x_y * x_g
-
-        return x_out
-
-
-class Self_Att(nn.Module):
-    """Self attention module of questions."""
-    def __init__(self):
-        super(Self_Att, self).__init__()
-
-        self.embed = nn.Sequential(
-            nn.Dropout(p=cfg["dropout_fc"]),
-            GatedTrans(
-                cfg["CMD_DIM"],
-                cfg["WRD_EMB_DIM"]
-            ),
-        )        
-        self.att = nn.Sequential(
-            nn.Dropout(p=cfg["dropout_fc"]),
-            nn.Linear(
-                cfg["WRD_EMB_DIM"],
-                1
-            )
-        )
-        self.softmax = nn.Softmax(dim=-1)
-
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_uniform_(m.weight.data)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias.data, 0)
-
-    def forward(self, word, word_encoded, word_not_pad):
-        # ques_word shape: (batch_size, num_rounds, quen_len_max, word_embed_dim)
-        # ques_embed shape: (batch_size, num_rounds, quen_len_max, lstm_hidden_size * 2)
-        # ques_not_pad shape: (batch_size, num_rounds, quen_len_max)
-        # output: img_att (batch_size, num_rounds, embed_dim)
-        batch_size = word.size(0)
-        len_max = word.size(1)
-
-        word_embed = self.embed(word_encoded) # shape: (batch_size, num_rounds, quen_len_max, embed_dim)
-        word_norm = F.normalize(word_embed, p=2, dim=-1) # shape: (batch_size, num_rounds, quen_len_max, embed_dim) 
-        
-        att = self.att(word_norm).squeeze(-1) # shape: (batch_size, num_rounds, quen_len_max)
-        # ignore <pad> word
-        att = self.softmax(att)
-        att = att * word_not_pad # shape: (batch_size, num_rounds, quen_len_max)
-        att = att / torch.sum(att, dim=-1, keepdim=True) # shape: (batch_size, num_rounds, quen_len_max)
-        feat = torch.sum(att.unsqueeze(-1) * word, dim=-2) # shape: (batch_size, num_rounds, rnn_dim)
-        
-        return feat, att
 
 
 class Encoder(nn.Module):
@@ -139,9 +63,10 @@ class Encoder(nn.Module):
 
         self.enc_seman_drop = nn.Dropout(1 - cfg.qDropout)
 
-        #self.transformer = Transformer()
-        self.w_encode = ops.Linear(cfg.WRD_EMB_DIM, cfg.CMD_DIM)
-        self.Self_Att = Self_Att()
+        self.transformer = Transformer()
+        self.trans_drop = nn.Dropout(1 - cfg.qDropout)
+        #self.w_encode = ops.Linear(cfg.WRD_EMB_DIM, cfg.CMD_DIM)
+        #self.Self_Att = Self_Att()
 
     def forward(self, qIndices, questionLengths, semanIndices, semanLengths):
         # Word embedding
@@ -152,20 +77,22 @@ class Encoder(nn.Module):
         questions = F.embedding(qIndices, embeddings) # 128 * 30 * 300
         questions = self.enc_input_drop(questions)
 
-        semans = F.embedding(semanIndices, embeddings) # 128 * 30 * 300
-        semans = self.enc_seman_drop(semans)
+        word_seman = F.embedding(semanIndices, embeddings) # 128 * 30 * 300
+        word_seman = self.enc_seman_drop(word_seman)
 
         # RNN (LSTM)
         questionCntxWords, vecQuestions = self.rnn0(questions, questionLengths) #128 * 30 * 512 128 * 512
         vecQuestions = self.question_drop(vecQuestions)
 
         # self-attention
-        seman_not_pad = (semanIndices != 0).float()
-        seman_encoded = self.w_encode(semans)
-        semanCnt, att = self.Self_Att(semans, seman_encoded, seman_not_pad)
+        encode_seman = self.transformer(word_seman)
+        encode_seman = self.trans_drop(encode_seman)
+        # seman_not_pad = (semanIndices != 0).float()
+        # seman_encoded = self.w_encode(semans)
+        # semanCnt, att = self.Self_Att(semans, seman_encoded, seman_not_pad)
         #semanCnt = self.transformer(semans, semanLengths)
 
-        return questionCntxWords, vecQuestions, semanCnt
+        return questionCntxWords, vecQuestions, word_seman, encode_seman
 
 
 class BiLSTM(nn.Module):

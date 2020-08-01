@@ -7,11 +7,90 @@ from . import ops as ops
 from .config import cfg
 
 
+class GatedTrans(nn.Module):
+    """docstring for GatedTrans"""
+    def __init__(self, in_dim, out_dim):
+        super(GatedTrans, self).__init__()
+        
+        self.embed_y = nn.Sequential(
+            ops.Linear(
+                in_dim,
+                out_dim
+            ),
+            nn.Tanh()
+        )
+        self.embed_g = nn.Sequential(
+            ops.Linear(
+                in_dim,
+                out_dim
+            ),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x_in):
+        x_y = self.embed_y(x_in)
+        x_g = self.embed_g(x_in)
+        x_out = x_y * x_g
+
+        return x_out
+
+
+class Self_Att(nn.Module):
+    """Self attention module of questions."""
+    def __init__(self):
+        super(Self_Att, self).__init__()
+
+        self.embed = nn.Sequential(
+            nn.Dropout(p=cfg["dropout_fc"]),
+            GatedTrans(
+                cfg["WRD_EMB_DIM"],
+                cfg["CMD_DIM"]
+            ),
+        )        
+        self.att = nn.Sequential(
+            nn.Dropout(p=cfg["dropout_fc"]),
+            nn.Linear(
+                cfg["CMD_DIM"],
+                1
+            )
+        )
+        self.word_e = ops.Linear(cfg["WRD_EMB_DIM"], cfg["CMD_DIM"])
+        self.softmax = nn.Softmax(dim=-1)
+
+        # for m in self.modules():
+        #     if isinstance(m, nn.Linear):
+        #         nn.init.kaiming_uniform_(m.weight.data)
+        #         if m.bias is not None:
+        #             nn.init.constant_(m.bias.data, 0)
+
+    def forward(self, word, word_encoded, word_not_pad):
+        # ques_word shape: (batch_size, num_rounds, quen_len_max, word_embed_dim)
+        # ques_embed shape: (batch_size, num_rounds, quen_len_max, lstm_hidden_size * 2)
+        # ques_not_pad shape: (batch_size, num_rounds, quen_len_max)
+        # output: img_att (batch_size, num_rounds, embed_dim)
+        batch_size = word.size(0)
+        len_max = word.size(1)
+
+        word_embed = self.embed(word_encoded) # shape: (batch_size, num_rounds, quen_len_max, embed_dim)
+        word_norm = F.normalize(word_embed, p=2, dim=-1) # shape: (batch_size, num_rounds, quen_len_max, embed_dim) 
+        
+        att = self.att(word_norm).squeeze(-1) # shape: (batch_size, num_rounds, quen_len_max)
+        word = self.word_e(word)
+        # ignore <pad> word
+        att = self.softmax(att)
+        att = att * word_not_pad # shape: (batch_size, num_rounds, quen_len_max)
+        att = att / torch.sum(att, dim=-1, keepdim=True) # shape: (batch_size, num_rounds, quen_len_max)
+        feat = torch.sum(att.unsqueeze(-1) * word, dim=-2) # shape: (batch_size, num_rounds, rnn_dim)
+        
+        return feat, att
+
+
 class LCGN(nn.Module):
     def __init__(self):
         super().__init__()
         self.build_loc_ctx_init()
         self.build_extract_textual_command()
+        self.build_extract_seman_command()
         self.build_propagate_message()
 
     def build_loc_ctx_init(self):
@@ -36,6 +115,11 @@ class LCGN(nn.Module):
             qInput_layer2 = ops.Linear(cfg.CMD_DIM, cfg.CMD_DIM)
             setattr(self, "qInput%d" % t, qInput_layer2)
         self.cmd_inter2logits = ops.Linear(cfg.CMD_DIM, 1)
+    
+    def build_extract_seman_command(self):
+        for t in range(cfg.MSG_ITER_NUM):
+            seman_layer = Self_Att()
+            setattr(self, "Seman%d" % t, seman_layer)
 
     def build_propagate_message(self):
         self.read_drop = nn.Dropout(1 - cfg.readDropout)
@@ -49,13 +133,31 @@ class LCGN(nn.Module):
         self.mem_update = ops.Linear(2*cfg.CTX_DIM, cfg.CTX_DIM)
         self.combine_kb = ops.Linear(2*cfg.CTX_DIM, cfg.CTX_DIM)
 
-    def forward(self, images, q_encoding, lstm_outputs, batch_size, q_length,
+        self.read_drop_seman = nn.Dropout(1 - cfg.readDropout)
+        self.project_x_loc_seman = ops.Linear(cfg.CTX_DIM, cfg.CTX_DIM)
+        self.project_x_ctx_seman = ops.Linear(cfg.CTX_DIM, cfg.CTX_DIM)
+        self.queries_seman = ops.Linear(3*cfg.CTX_DIM, cfg.CTX_DIM)
+        self.keys_seman = ops.Linear(3*cfg.CTX_DIM, cfg.CTX_DIM)
+        self.vals_seman = ops.Linear(3*cfg.CTX_DIM, cfg.CTX_DIM)
+        self.proj_keys_seman = ops.Linear(cfg.CMD_DIM, cfg.CTX_DIM)
+        self.proj_vals_seman = ops.Linear(cfg.CMD_DIM, cfg.CTX_DIM)
+        self.mem_update_seman = ops.Linear(2*cfg.CTX_DIM, cfg.CTX_DIM)
+        #self.combine_kb_seman = ops.Linear(2*cfg.CTX_DIM, cfg.CTX_DIM)
+        self.conv1d = nn.Conv1d(4, out_channels=1, kernel_size=1)
+
+
+    def forward(self, images, q_encoding, lstm_outputs, word_seman, encode_seman, semanIndices, batch_size, q_length,
                 entity_num):
         x_loc, x_ctx, x_ctx_var_drop = self.loc_ctx_init(images)
+        seman_not_pad = (semanIndices != 0).float()
         for t in range(cfg.MSG_ITER_NUM):
-            x_ctx = self.run_message_passing_iter(
+            x_ctx_1 = self.run_message_passing_iter(
                 q_encoding, lstm_outputs, q_length, x_loc, x_ctx,
                 x_ctx_var_drop, entity_num, t)
+            x_ctx_2 = self.run_message_passing_seman_iter(
+                word_seman, encode_seman, seman_not_pad, x_loc, x_ctx,
+                x_ctx_var_drop, entity_num, t)
+            x_ctx = self.tensor_inter_graph_propagation(x_ctx_1, x_ctx_2)
         x_out = self.combine_kb(torch.cat([x_loc, x_ctx], dim=-1))
         return x_out
 
@@ -69,6 +171,11 @@ class LCGN(nn.Module):
         att = F.softmax(raw_att, dim=-1) # 128 * 30
         cmd = torch.bmm(att[:, None, :], lstm_outputs).squeeze(1) # 128 * 512
         return cmd
+
+    def extract_seman_command(self, word_seman, encode_seman, seman_not_pad, t):
+        seman_layer = getattr(self, "Seman%d" % t)
+        seman_cmd, att = seman_layer(word_seman, encode_seman, seman_not_pad)
+        return seman_cmd
 
     def propagate_message(self, cmd, x_loc, x_ctx, x_ctx_var_drop, entity_num):
         x_ctx = x_ctx * x_ctx_var_drop
@@ -89,6 +196,26 @@ class LCGN(nn.Module):
 
         x_ctx_new = self.mem_update(torch.cat([x_ctx, message], dim=-1))
         return x_ctx_new
+    
+    def propagate_seman_message(self, cmd, x_loc, x_ctx, x_ctx_var_drop, entity_num):
+        x_ctx = x_ctx * x_ctx_var_drop
+        proj_x_loc = self.project_x_loc_seman(self.read_drop_seman(x_loc))
+        proj_x_ctx = self.project_x_ctx_seman(self.read_drop_seman(x_ctx))
+        x_joint = torch.cat(
+            [x_loc, x_ctx, proj_x_loc * proj_x_ctx], dim=-1)
+
+        queries = self.queries_seman(x_joint) # 128 * 49 * 512
+        keys = self.keys_seman(x_joint) * self.proj_keys_seman(cmd)[:, None, :] # 128 * 49 * 512
+        vals = self.vals_seman(x_joint) * self.proj_vals_seman(cmd)[:, None, :] # 128 * 49 * 512
+        edge_score = (
+            torch.bmm(queries, torch.transpose(keys, 1, 2)) /
+            np.sqrt(cfg.CTX_DIM)) # 128 * 49 * 49
+        edge_score = ops.apply_mask2d(edge_score, entity_num)
+        edge_prob = F.softmax(edge_score, dim=-1)
+        message = torch.bmm(edge_prob, vals)
+
+        x_ctx_new = self.mem_update_seman(torch.cat([x_ctx, message], dim=-1))
+        return x_ctx_new
 
     def run_message_passing_iter(
             self, q_encoding, lstm_outputs, q_length, x_loc, x_ctx,
@@ -96,6 +223,15 @@ class LCGN(nn.Module):
         cmd = self.extract_textual_command(
                 q_encoding, lstm_outputs, q_length, t)
         x_ctx = self.propagate_message(
+            cmd, x_loc, x_ctx, x_ctx_var_drop, entity_num)
+        return x_ctx
+    
+    def run_message_passing_seman_iter(
+            self, word_seman, encode_seman, seman_not_pad, x_loc, x_ctx,
+            x_ctx_var_drop, entity_num, t):
+        cmd = self.extract_seman_command(
+                word_seman, encode_seman, seman_not_pad, t)
+        x_ctx = self.propagate_seman_message(
             cmd, x_loc, x_ctx, x_ctx_var_drop, entity_num)
         return x_ctx
 
@@ -119,6 +255,34 @@ class LCGN(nn.Module):
             x_ctx.size(),
             keep_prob=(cfg.memoryDropout if self.training else 1.))
         return x_loc, x_ctx, x_ctx_var_drop
+
+
+
+    def tensor_inter_graph_propagation(self, x_out_1, x_out_2):
+        bsz, imageNum, dModel= x_out_1.size(0), x_out_1.size(1), x_out_1.size(2)
+        x_sum_1 = torch.sum(x_out_1, dim=1)
+        x_sum_2 = torch.sum(x_out_2, dim=1)
+
+        x_expand_1 = x_sum_1.repeat(1, 2)
+        x_expand_2 = x_sum_2.repeat(1, 2)
+
+        x_sum = torch.cat([x_expand_1, x_expand_2], -1)
+        x_sum = x_sum.unsqueeze(1)
+        x_sum = x_sum.repeat(1, imageNum, 1)
+
+        x_union = torch.cat([x_out_1, x_out_2], dim=-1)
+        x_union_expand = x_union.repeat(1, 1, 2)
+
+        x_kr = torch.mul(x_union_expand, x_sum)
+        x_kr = x_kr.view(bsz * imageNum, 4, dModel)
+        #x_kr = x_kr.permute(0, 2, 1)
+
+        x_kr = F.normalize(x_kr, dim=-1)
+        x_out = self.conv1d(x_kr)
+        x_out = x_out.squeeze(1)
+        x_out = x_out.view(bsz, imageNum, dModel)
+        
+        return x_out
 
 
 class SemanLCGN(nn.Module):
