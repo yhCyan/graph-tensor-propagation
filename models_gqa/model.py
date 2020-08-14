@@ -7,6 +7,8 @@ import numpy as np
 from apex import amp
 from torch.cuda.amp import autocast as autocast
 
+from collections import OrderedDict
+
 from . import ops as ops
 from .config import cfg
 from .lcgn import LCGN, SemanLCGN
@@ -164,7 +166,7 @@ class LCGNwrapper():
                 self.trainable_params, lr=cfg.TRAIN.SOLVER.LR)
         #self.optimizer = AdamW(self.trainable_params, lr=cfg.TRAIN.SOLVER.LR, eps=cfg.adam_epsilon)
         total_step = int(943000 / cfg.n_gpus // cfg.TRAIN.BATCH_SIZE + 1) * cfg.TRAIN.MAX_EPOCH
-        self.scheduler = get_linear_schedule_with_warmup(
+        self.scheduler = get_cosine_schedule_with_warmup(
                                                 self.optimizer, num_warmup_steps=cfg.warmup_steps, num_training_steps=total_step)
         if cfg.fp16:
             self.scaler = torch.cuda.amp.GradScaler()
@@ -212,13 +214,19 @@ class LCGNwrapper():
         # restore original mode
         self.train(current_mode)
 
+
     def load_state_dict(self, state_dict):
         # Load parameters in training mode
         current_mode = self.model.training
         self.train(True)
 
         assert (not cfg.USE_EMA) or (not self.using_ema_params)
-        self.model.load_state_dict(state_dict['model'])
+        new_state_dict = OrderedDict()
+        for k, v in state_dict['model'].items():
+            name = k[7: ]
+            new_state_dict[name] = v
+
+        self.model.load_state_dict(new_state_dict)
 
         if 'optimizer' in state_dict:
             self.optimizer.load_state_dict(state_dict['optimizer'])

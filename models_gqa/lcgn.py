@@ -131,7 +131,7 @@ class LCGN(nn.Module):
         self.proj_keys = ops.Linear(cfg.CMD_DIM, cfg.CTX_DIM)
         self.proj_vals = ops.Linear(cfg.CMD_DIM, cfg.CTX_DIM)
         self.mem_update = ops.Linear(2*cfg.CTX_DIM, cfg.CTX_DIM)
-        self.combine_kb = ops.Linear(2*cfg.CTX_DIM, cfg.CTX_DIM)
+        self.combine_kb = ops.Linear(3*cfg.CTX_DIM, cfg.CTX_DIM)
 
         self.read_drop_seman = nn.Dropout(1 - cfg.readDropout)
         self.project_x_loc_seman = ops.Linear(cfg.CTX_DIM, cfg.CTX_DIM)
@@ -143,22 +143,37 @@ class LCGN(nn.Module):
         self.proj_vals_seman = ops.Linear(cfg.CMD_DIM, cfg.CTX_DIM)
         self.mem_update_seman = ops.Linear(2*cfg.CTX_DIM, cfg.CTX_DIM)
         #self.combine_kb_seman = ops.Linear(2*cfg.CTX_DIM, cfg.CTX_DIM)
-        self.conv1d = nn.Conv1d(4, out_channels=1, kernel_size=1)
+
+        self.layernorm_q = nn.LayerNorm(cfg.CTX_DIM)
+        self.layernorm_s = nn.LayerNorm(cfg.CTX_DIM)
+        self.conv1d_q = nn.Conv1d(2, out_channels=1, kernel_size=1)
+        self.conv1d_s = nn.Conv1d(2, out_channels=1, kernel_size=1)
 
 
     def forward(self, images, q_encoding, lstm_outputs, word_seman, encode_seman, semanIndices, batch_size, q_length,
-                entity_num):
+                entity_num, norm=True):
         x_loc, x_ctx, x_ctx_var_drop = self.loc_ctx_init(images)
         seman_not_pad = (semanIndices != 0).float()
         for t in range(cfg.MSG_ITER_NUM):
-            x_ctx_1 = self.run_message_passing_iter(
-                q_encoding, lstm_outputs, q_length, x_loc, x_ctx,
-                x_ctx_var_drop, entity_num, t)
-            x_ctx_2 = self.run_message_passing_seman_iter(
-                word_seman, encode_seman, seman_not_pad, x_loc, x_ctx,
-                x_ctx_var_drop, entity_num, t)
-            x_ctx = self.tensor_inter_graph_propagation(x_ctx_1, x_ctx_2)
-        x_out = self.combine_kb(torch.cat([x_loc, x_ctx], dim=-1))
+            if t == 0:
+                x_ctx_q = self.run_message_passing_iter(
+                    q_encoding, lstm_outputs, q_length, x_loc, x_ctx,
+                    x_ctx_var_drop, entity_num, t)
+                x_ctx_s = self.run_message_passing_seman_iter(
+                    word_seman, encode_seman, seman_not_pad, x_loc, x_ctx,
+                    x_ctx_var_drop, entity_num, t)
+            else:
+                x_ctx_q = self.run_message_passing_iter(
+                    q_encoding, lstm_outputs, q_length, x_loc, x_ctx_q,
+                    x_ctx_var_drop, entity_num, t)
+                x_ctx_s = self.run_message_passing_seman_iter(
+                    word_seman, encode_seman, seman_not_pad, x_loc, x_ctx_s,
+                    x_ctx_var_drop, entity_num, t)
+            x_ctx_q, x_ctx_s = self.tensor_inter_graph_propagation(x_ctx_q, x_ctx_s)
+            if norm:
+                x_ctx_q = self.layernorm_q(x_ctx_q)
+                x_ctx_s = self.layernorm_s(x_ctx_s)
+        x_out = self.combine_kb(torch.cat([x_loc, x_ctx_q, x_ctx_s], dim=-1))
         return x_out
 
     def extract_textual_command(self, q_encoding, lstm_outputs, q_length, t):
@@ -263,26 +278,30 @@ class LCGN(nn.Module):
         x_sum_1 = torch.sum(x_out_1, dim=1)
         x_sum_2 = torch.sum(x_out_2, dim=1)
 
-        x_expand_1 = x_sum_1.repeat(1, 2)
-        x_expand_2 = x_sum_2.repeat(1, 2)
+        # x_expand_1 = x_sum_1.repeat(1, 2)
+        # x_expand_2 = x_sum_2.repeat(1, 2)
 
-        x_sum = torch.cat([x_expand_1, x_expand_2], -1)
+        x_sum = torch.cat([x_sum_1, x_sum_2], -1)
         x_sum = x_sum.unsqueeze(1)
         x_sum = x_sum.repeat(1, imageNum, 1)
 
-        x_union = torch.cat([x_out_1, x_out_2], dim=-1)
-        x_union_expand = x_union.repeat(1, 1, 2)
+        x_union = torch.cat([x_out_2, x_out_1], dim=-1)
+        # x_union_expand = x_union.repeat(1, 1, 2)
 
-        x_kr = torch.mul(x_union_expand, x_sum)
-        x_kr = x_kr.view(bsz * imageNum, 4, dModel)
+        x_kr = torch.mul(x_union, x_sum)
+        x_kr = x_kr.view(bsz * imageNum, 2, dModel)
         #x_kr = x_kr.permute(0, 2, 1)
+        #x_kr = F.normalize(x_kr, dim=-1)
 
-        x_kr = F.normalize(x_kr, dim=-1)
-        x_out = self.conv1d(x_kr)
-        x_out = x_out.squeeze(1)
-        x_out = x_out.view(bsz, imageNum, dModel)
+        x_out_q = self.conv1d_q(x_kr)
+        x_out_q = x_out_q.squeeze(1)
+        x_out_q = x_out_q.view(bsz, imageNum, dModel)
+
+        x_out_s = self.conv1d_s(x_kr)
+        x_out_s = x_out_s.squeeze(1)
+        x_out_s = x_out_s.view(bsz, imageNum, dModel)
         
-        return x_out
+        return x_out_q, x_out_s
 
 
 class SemanLCGN(nn.Module):

@@ -21,10 +21,10 @@ __C.nodes = 1
 __C.nr = 0
 __C.fp16 = False
 __C.fp16_opt_level = "O1"
-__C.warmup_steps = 0
+__C.warmup_steps = 13000
 __C.logging_steps = 500
 __C.weight_decay = 1e-2
-__C.DEBUG = False # when want to debug the programe, can set the flag to True
+__C.DEBUG = False # when you want to debug the code, can set the flag to True
 __C.SNAPSHOT_FILE = '/home/xdjf/graph-tensor-propagation/exp_gqa/pytorch_ckpt/%s/%04d.ckpt'
 
 __C.VOCAB_QUESTION_FILE = '/home/xdjf/graph-tensor-propagation/exp_gqa/data/vocabulary_gqa.txt'
@@ -56,7 +56,7 @@ __C.ADD_POS_ENC = True
 __C.PE_DIM = 64
 __C.PE_SCALE = 1.
 
-__C.MSG_ITER_NUM = 2
+__C.MSG_ITER_NUM = 4
 
 __C.STEM_NORMALIZE = True
 __C.STEM_LINEAR = True
@@ -112,7 +112,7 @@ __C.adam_epsilon = 1e-8
 __C.TEST = AttrDict()
 __C.TEST.SPLIT_VQA = 'val_balanced'
 __C.TEST.BATCH_SIZE = 128
-__C.TEST.EPOCH = 24  # Needs to be supplied
+__C.TEST.EPOCH = 5  # Needs to be supplied
 __C.TEST.DUMP_PRED = False
 __C.TEST.RESULT_DIR = '/home/xdjf/graph-tensor-propagation/exp_gqa/results/%s/%04d'
 

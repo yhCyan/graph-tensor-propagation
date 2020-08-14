@@ -39,6 +39,7 @@ exp_gqa/gqa_dataset
 dataset.py
 tes*
 start_train.py
+start_test.py
 *.md
 
 wandb/*

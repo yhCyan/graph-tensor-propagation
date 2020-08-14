@@ -13,7 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 from apex.parallel import DistributedDataParallel as DDP
 from apex import amp
 
-sys.path.append('..')
+sys.path.append('../')
 from models_gqa.model import LCGNwrapper
 from models_gqa.config import build_cfg_from_argparse
 from util.gqa_train.data_reader import DataReader
@@ -117,7 +117,8 @@ def run_train_on_data(model, data_reader_train, cfg, rank, gpu, run_eval=False,
         tr_loss += loss_sum
         batch_num += 1
         global_step += 1
-
+        lr = batch_res['lr']
+        
         if rank in [-1, 0] and cfg.logging_steps > 0 and global_step % cfg.logging_steps == 0 and cfg.DEBUG == False:
             wandb.log({"lr": batch_res['lr'], "train_loss": loss_sum/batch_num, "train_correct": correct/total})
             # tb_writer.add_scalar("lr", batch_res['lr'], global_step)
@@ -229,8 +230,8 @@ def train(gpu, cfg):
     # Save snapshot
     if rank in [-1, 0]:
         if cfg.DEBUG == False:
-            from wandb import magic
-            wandb.init(project="gtp", notes="graph tensor propa", sync_tensorboard=True, name="zyh-8-1-2020")
+            name = time.strftime('%Y%m%d-%H%M%S')
+            wandb.init(project="gtp", notes="graph tensor propa", name=name)
             wandb.watch(model.model, log="all")
             wandb.config.update(cfg)
         snapshot_dir = os.path.dirname(cfg.SNAPSHOT_FILE % (cfg.EXP_NAME, 0))
@@ -242,11 +243,13 @@ def train(gpu, cfg):
         model.load_state_dict(torch.load(
             cfg.SNAPSHOT_FILE % (cfg.EXP_NAME, cfg.TRAIN.START_EPOCH)))
 
-    print('%s - train for %d epochs' % (cfg.EXP_NAME, cfg.TRAIN.MAX_EPOCH))
+    if rank in [-1, 0]:
+        print('%s - train for %d epochs' % (cfg.EXP_NAME, cfg.TRAIN.MAX_EPOCH))
     run_train_on_data(
         model, data_reader_train, cfg, rank, gpu, run_eval=cfg.TRAIN.RUN_EVAL,
         data_reader_eval=data_reader_eval)
-    print('%s - train (done)' % cfg.EXP_NAME)
+    if rank in [-1, 0]:
+        print('%s - train (done)' % cfg.EXP_NAME)
 
 
 def test(cfg):

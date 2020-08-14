@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import numpy as np
-
+from collections import OrderedDict
 
 activations = {
     'NON': lambda x: x,
@@ -60,11 +60,15 @@ class ExponentialMovingAverage():
         return self.params_ema
 
     def load_state_dict(self, state_dict):
-        assert self.params_ema.keys() == state_dict.keys()
+        new_state_dict = OrderedDict()
+        for k, v in state_dict.items():
+            name = k[7: ]
+            new_state_dict[name] = v
+        assert self.params_ema.keys() == new_state_dict.keys()
         for k, p_ema in self.params_ema.items():
-            assert state_dict[k].dtype == p_ema.dtype
-            assert state_dict[k].size() == p_ema.size()
-            p_ema[...] = state_dict[k]
+            assert new_state_dict[k].dtype == p_ema.dtype
+            assert new_state_dict[k].size() == p_ema.size()
+            p_ema[...] = new_state_dict[k]
 
     def set_params_from_ema(self, param_dict):
         for k, p in param_dict.items():
@@ -81,7 +85,7 @@ def apply_mask1d(attention, image_locs):
     tmp2 = image_locs.type(tmp1.type())
     tmp2 = tmp2.unsqueeze(dim=1).expand(batch_size, num_loc)
     mask = torch.ge(tmp1, tmp2)
-    attention = attention.masked_fill(mask, -float('inf'))
+    attention = attention.masked_fill(mask, -1e30)
     return attention
 
 
@@ -96,7 +100,7 @@ def apply_mask2d(attention, image_locs):
     tmp2 = tmp2.unsqueeze(dim=1).expand(batch_size, num_loc) # 128 * 49
     mask1d = torch.ge(tmp1, tmp2)
     mask2d = mask1d[:, None, :] | mask1d[:, :, None]
-    attention = attention.masked_fill(mask2d, -float('inf'))
+    attention = attention.masked_fill(mask2d, -1e30)
     return attention
 
 
