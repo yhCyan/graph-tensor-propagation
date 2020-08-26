@@ -6,7 +6,8 @@ import torch.nn.functional as F
 import numpy as np
 from apex import amp
 from torch.cuda.amp import autocast as autocast
-
+from transformers import BertModel, BertTokenizer
+from util import text_processing
 from collections import OrderedDict
 
 from . import ops as ops
@@ -43,12 +44,36 @@ class LCGNnet(nn.Module):
             embeddingsInit = np.random.randn(num_vocab-1, cfg.WRD_EMB_DIM)
         self.num_vocab = num_vocab # 2957
         self.num_choices = num_choices # 1845
-        self.encoder = Encoder(embeddingsInit)
+
+        self.tokenizer = BertTokenizer.from_pretrained('/home/xdjf/bert_config/bert-base-uncased')
+        self.model = BertModel.from_pretrained('/home/xdjf/bert_config/bert-base-uncased')
+        self.name_dict = text_processing.VocabDict(cfg.VOCAB_NAME_FILE)
+        name_embedding = self.reset_name_embedding()
+
+        self.encoder = Encoder(embeddingsInit, name_embedding)
         self.lcgn = LCGN()
         #self.sema_lcgn = SemanLCGN()
         self.single_hop = SingleHop()
         self.classifier = Classifier(num_choices)
         #self.seman_encoder = ops.Linear(cfg.WRD_EMB_DIM, cfg.CMD_DIM)
+
+
+    def reset_name_embedding(self):
+        weight = torch.zeros(self.name_dict.num_vocab - 1, 768)
+        for word in self.name_dict.word_list:
+            if word == '<unk>':
+                continue
+            temp_embedding = self.extract_name_embedding(word)
+            weight[self.name_dict.word2idx(word) - 1] = temp_embedding
+            
+        return weight
+
+    def extract_name_embedding(self, name):
+        token_name = self.tokenizer.encode(name, add_special_tokens=False)
+        input_ids = torch.tensor([token_name])
+        with torch.no_grad():
+            _, out = self.model(input_ids)
+        return out # 1* 768
 
     def forward(self, batch):
         #batchSize = len(batch['image_feat_batch'])
@@ -57,13 +82,16 @@ class LCGNnet(nn.Module):
         semanIndices = batch[2]
         semanLengths = batch[3]
         answerIndices = batch[4]
-        images = batch[5]
-        imagesObjectNum = batch[6]
+        nameIndices = batch[5]
+        nameLengths = batch[6]
+        images = batch[7]
+        imagesObjectNum = batch[8]
         batchSize = images.size(0)
         # LSTM
-        questionCntxWords, vecQuestions, word_seman, encode_seman = self.encoder(
+        questionCntxWords, vecQuestions, word_seman, encode_seman, name_embed = self.encoder(
             questionIndices, questionLengths, # 128 * 30 * 512 128 * 512
-            semanIndices, semanLengths) 
+            semanIndices, semanLengths,
+            nameIndices, nameLengths) 
 
         encode_seman = encode_seman.permute(1, 0, 2)
         #encode_seman = self.seman_encoder(encode_seman)
@@ -72,7 +100,7 @@ class LCGNnet(nn.Module):
         x_out = self.lcgn(
             images=images, q_encoding=vecQuestions,
             lstm_outputs=questionCntxWords, word_seman=word_seman, encode_seman=encode_seman, semanIndices=semanIndices, batch_size=batchSize,
-            q_length=questionLengths, entity_num=imagesObjectNum)
+            q_length=questionLengths, entity_num=imagesObjectNum, name_embed=name_embed, nameLengths=nameLengths)
 
         
 

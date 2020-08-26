@@ -43,3 +43,5 @@ start_test.py
 *.md
 
 wandb/*
+
+vocab.py

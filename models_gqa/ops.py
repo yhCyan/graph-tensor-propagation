@@ -96,10 +96,36 @@ def apply_mask2d(attention, image_locs):
         0, num_loc, dtype=attention.dtype, device=attention.device).unsqueeze(0)
 
     tmp1 = tmp1.expand(batch_size, num_loc) # 128 * 49
-    tmp2 = image_locs.type(tmp1.type())
+    tmp2 = image_locs.type(tmp1.type()) # 128
     tmp2 = tmp2.unsqueeze(dim=1).expand(batch_size, num_loc) # 128 * 49
     mask1d = torch.ge(tmp1, tmp2)
     mask2d = mask1d[:, None, :] | mask1d[:, :, None]
+    attention = attention.masked_fill(mask2d, -1e30)
+    return attention
+
+
+def apply_mask2d_name(attention, image_locs, nameLengths):
+    batch_size, num_loc, num_name = attention.size()
+
+    tmp1 = attention.new_zeros(num_loc) # 49
+    tmp1[:num_loc] = torch.arange(
+        0, num_loc, dtype=attention.dtype, device=attention.device).unsqueeze(0)
+
+    tmp1 = tmp1.expand(batch_size, num_loc) # 128 * 49
+    tmp2 = image_locs.type(tmp1.type()) # 128
+    tmp2 = tmp2.unsqueeze(dim=1).expand(batch_size, num_loc) # 128 * 49
+    mask1d = torch.ge(tmp1, tmp2)
+
+    tmp1_n = attention.new_zeros(num_name)
+    tmp1_n[:num_name] = torch.arange(
+        0, num_name, dtype=attention.dtype, device=attention.device).unsqueeze(0)
+
+    tmp1_n = tmp1_n.expand(batch_size, num_name)
+    tmp2_n = nameLengths.type(tmp1_n.type())
+    tmp2_n = tmp2_n.unsqueeze(dim=1).expand(batch_size, num_name)
+    mask1d_n = torch.ge(tmp1_n, tmp2_n)
+
+    mask2d = mask1d_n[:, None, :] | mask1d[:, :, None]
     attention = attention.masked_fill(mask2d, -1e30)
     return attention
 

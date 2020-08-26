@@ -137,21 +137,24 @@ class LCGN(nn.Module):
         self.project_x_loc_seman = ops.Linear(cfg.CTX_DIM, cfg.CTX_DIM)
         self.project_x_ctx_seman = ops.Linear(cfg.CTX_DIM, cfg.CTX_DIM)
         self.queries_seman = ops.Linear(3*cfg.CTX_DIM, cfg.CTX_DIM)
-        self.keys_seman = ops.Linear(3*cfg.CTX_DIM, cfg.CTX_DIM)
-        self.vals_seman = ops.Linear(3*cfg.CTX_DIM, cfg.CTX_DIM)
+        # self.keys_seman = ops.Linear(3*cfg.CTX_DIM, cfg.CTX_DIM)
+        # self.vals_seman = ops.Linear(3*cfg.CTX_DIM, cfg.CTX_DIM)
         self.proj_keys_seman = ops.Linear(cfg.CMD_DIM, cfg.CTX_DIM)
         self.proj_vals_seman = ops.Linear(cfg.CMD_DIM, cfg.CTX_DIM)
         self.mem_update_seman = ops.Linear(2*cfg.CTX_DIM, cfg.CTX_DIM)
+
+        self.keys_name = ops.Linear(cfg.NAME_DIM, cfg.CTX_DIM)
+        self.vals_name = ops.Linear(cfg.NAME_DIM, cfg.CTX_DIM)
         #self.combine_kb_seman = ops.Linear(2*cfg.CTX_DIM, cfg.CTX_DIM)
 
         self.layernorm_q = nn.LayerNorm(cfg.CTX_DIM)
         self.layernorm_s = nn.LayerNorm(cfg.CTX_DIM)
-        self.conv1d_q = nn.Conv1d(2, out_channels=1, kernel_size=1)
-        self.conv1d_s = nn.Conv1d(2, out_channels=1, kernel_size=1)
+        self.conv1d_q = nn.Conv1d(4, out_channels=1, kernel_size=1)
+        self.conv1d_s = nn.Conv1d(4, out_channels=1, kernel_size=1)
 
 
     def forward(self, images, q_encoding, lstm_outputs, word_seman, encode_seman, semanIndices, batch_size, q_length,
-                entity_num, norm=True):
+                entity_num, name_embed, nameLengths, norm=True):
         x_loc, x_ctx, x_ctx_var_drop = self.loc_ctx_init(images)
         seman_not_pad = (semanIndices != 0).float()
         for t in range(cfg.MSG_ITER_NUM):
@@ -161,15 +164,15 @@ class LCGN(nn.Module):
                     x_ctx_var_drop, entity_num, t)
                 x_ctx_s = self.run_message_passing_seman_iter(
                     word_seman, encode_seman, seman_not_pad, x_loc, x_ctx,
-                    x_ctx_var_drop, entity_num, t)
+                    x_ctx_var_drop, entity_num, name_embed, nameLengths, t)
             else:
                 x_ctx_q = self.run_message_passing_iter(
                     q_encoding, lstm_outputs, q_length, x_loc, x_ctx_q,
                     x_ctx_var_drop, entity_num, t)
                 x_ctx_s = self.run_message_passing_seman_iter(
                     word_seman, encode_seman, seman_not_pad, x_loc, x_ctx_s,
-                    x_ctx_var_drop, entity_num, t)
-            x_ctx_q, x_ctx_s = self.tensor_inter_graph_propagation(x_ctx_q, x_ctx_s)
+                    x_ctx_var_drop, entity_num, name_embed, nameLengths, t)
+            x_ctx_q, x_ctx_s = self.tensor_inter_graph_propagation(x_ctx_q, x_ctx_s, entity_num)
             if norm:
                 x_ctx_q = self.layernorm_q(x_ctx_q)
                 x_ctx_s = self.layernorm_s(x_ctx_s)
@@ -212,7 +215,7 @@ class LCGN(nn.Module):
         x_ctx_new = self.mem_update(torch.cat([x_ctx, message], dim=-1))
         return x_ctx_new
     
-    def propagate_seman_message(self, cmd, x_loc, x_ctx, x_ctx_var_drop, entity_num):
+    def propagate_seman_message(self, cmd, x_loc, x_ctx, x_ctx_var_drop, name_embed, nameLengths, entity_num):
         x_ctx = x_ctx * x_ctx_var_drop
         proj_x_loc = self.project_x_loc_seman(self.read_drop_seman(x_loc))
         proj_x_ctx = self.project_x_ctx_seman(self.read_drop_seman(x_ctx))
@@ -220,12 +223,12 @@ class LCGN(nn.Module):
             [x_loc, x_ctx, proj_x_loc * proj_x_ctx], dim=-1)
 
         queries = self.queries_seman(x_joint) # 128 * 49 * 512
-        keys = self.keys_seman(x_joint) * self.proj_keys_seman(cmd)[:, None, :] # 128 * 49 * 512
-        vals = self.vals_seman(x_joint) * self.proj_vals_seman(cmd)[:, None, :] # 128 * 49 * 512
+        keys = self.keys_name(name_embed) * self.proj_keys_seman(cmd)[:, None, :] # 128 * 49 * 512
+        vals = self.vals_name(name_embed) * self.proj_vals_seman(cmd)[:, None, :] # 128 * 49 * 512
         edge_score = (
             torch.bmm(queries, torch.transpose(keys, 1, 2)) /
             np.sqrt(cfg.CTX_DIM)) # 128 * 49 * 49
-        edge_score = ops.apply_mask2d(edge_score, entity_num)
+        edge_score = ops.apply_mask2d_name(edge_score, entity_num, nameLengths)
         edge_prob = F.softmax(edge_score, dim=-1)
         message = torch.bmm(edge_prob, vals)
 
@@ -243,11 +246,11 @@ class LCGN(nn.Module):
     
     def run_message_passing_seman_iter(
             self, word_seman, encode_seman, seman_not_pad, x_loc, x_ctx,
-            x_ctx_var_drop, entity_num, t):
+            x_ctx_var_drop, entity_num, name_embed, nameLengths, t):
         cmd = self.extract_seman_command(
                 word_seman, encode_seman, seman_not_pad, t)
         x_ctx = self.propagate_seman_message(
-            cmd, x_loc, x_ctx, x_ctx_var_drop, entity_num)
+            cmd, x_loc, x_ctx, x_ctx_var_drop, name_embed, nameLengths, entity_num)
         return x_ctx
 
     def loc_ctx_init(self, images):
@@ -273,25 +276,35 @@ class LCGN(nn.Module):
 
 
 
-    def tensor_inter_graph_propagation(self, x_out_1, x_out_2):
-        bsz, imageNum, dModel= x_out_1.size(0), x_out_1.size(1), x_out_1.size(2)
-        x_sum_1 = torch.sum(x_out_1, dim=1)
-        x_sum_2 = torch.sum(x_out_2, dim=1)
+    def tensor_inter_graph_propagation(self, x_out_1, x_out_2, entity_num):
+        bsz, imageNum, dModel = x_out_1.size(0), x_out_1.size(1), x_out_1.size(2)
 
-        # x_expand_1 = x_sum_1.repeat(1, 2)
-        # x_expand_2 = x_sum_2.repeat(1, 2)
+        att_sum = torch.ones((bsz, imageNum), dtype=x_out_1.dtype, device=x_out_1.device)
+        mask_sum = ops.apply_mask1d(att_sum, entity_num)
 
-        x_sum = torch.cat([x_sum_1, x_sum_2], -1)
+        x_sum_1 = torch.bmm(mask_sum[:, None, :], x_out_1).squeeze(1)
+        x_sum_2 = torch.bmm(mask_sum[:, None, :], x_out_2).squeeze(1)
+        # x_sum_1 = torch.sum(x_out_1, dim=1)
+        # x_sum_2 = torch.sum(x_out_2, dim=1)
+
+        x_expand_1 = x_sum_1.repeat(1, 2)
+        x_expand_2 = x_sum_2.repeat(1, 2)
+
+        x_sum = torch.cat([x_expand_1, x_expand_2], -1)
         x_sum = x_sum.unsqueeze(1)
         x_sum = x_sum.repeat(1, imageNum, 1)
 
         x_union = torch.cat([x_out_2, x_out_1], dim=-1)
-        # x_union_expand = x_union.repeat(1, 1, 2)
+        x_union_expand = x_union.repeat(1, 1, 2)
 
-        x_kr = torch.mul(x_union, x_sum)
-        x_kr = x_kr.view(bsz * imageNum, 2, dModel)
-        #x_kr = x_kr.permute(0, 2, 1)
-        #x_kr = F.normalize(x_kr, dim=-1)
+        # mask_union = torch.ones_like(x_union_expand)
+        # mask_union[:, entity_num: , :].zeros_()
+        # x_union_expand = torch.mul(x_union_expand, mask_union)
+
+        x_kr = torch.mul(x_union_expand, x_sum)
+        x_kr = x_kr.view(bsz * imageNum, 4, dModel)
+        # x_kr = x_kr.permute(0, 2, 1)
+        x_kr = F.normalize(x_kr, dim=-1)
 
         x_out_q = self.conv1d_q(x_kr)
         x_out_q = x_out_q.squeeze(1)

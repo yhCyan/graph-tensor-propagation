@@ -53,10 +53,12 @@ class Transformer(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, embInit):
+    def __init__(self, embInit, name_embedding):
         super().__init__()
         self.embeddingsVar = nn.Parameter(
             torch.Tensor(embInit), requires_grad=(not cfg.WRD_EMB_FIXED))
+        self.name_embedding = nn.Parameter(
+            name_embedding, requires_grad=False)
         self.enc_input_drop = nn.Dropout(1 - cfg.encInputDropout)
         self.rnn0 = BiLSTM()
         self.question_drop = nn.Dropout(1 - cfg.qDropout)
@@ -68,17 +70,25 @@ class Encoder(nn.Module):
         #self.w_encode = ops.Linear(cfg.WRD_EMB_DIM, cfg.CMD_DIM)
         #self.Self_Att = Self_Att()
 
-    def forward(self, qIndices, questionLengths, semanIndices, semanLengths):
+    def forward(self, qIndices, questionLengths, semanIndices, semanLengths, nameIndices, nameLengths):
         # Word embedding
         embeddingsVar = self.embeddingsVar.cuda()
         embeddings = torch.cat(
             [torch.zeros(1, cfg.WRD_EMB_DIM, device='cuda'), embeddingsVar],
             dim=0)
+
+        name_embeddingVar = self.name_embedding.cuda()
+        name_embedding = torch.cat(
+            [torch.zeros(1, 768, device='cuda'), name_embeddingVar],
+            dim=0)
+
         questions = F.embedding(qIndices, embeddings) # 128 * 30 * 300
         questions = self.enc_input_drop(questions)
 
         word_seman = F.embedding(semanIndices, embeddings) # 128 * 30 * 300
         word_seman = self.enc_seman_drop(word_seman)
+
+        name_embed = F.embedding(nameIndices, name_embedding)
 
         # RNN (LSTM)
         questionCntxWords, vecQuestions = self.rnn0(questions, questionLengths) #128 * 30 * 512 128 * 512
@@ -92,7 +102,7 @@ class Encoder(nn.Module):
         # semanCnt, att = self.Self_Att(semans, seman_encoded, seman_not_pad)
         #semanCnt = self.transformer(semans, semanLengths)
 
-        return questionCntxWords, vecQuestions, word_seman, encode_seman
+        return questionCntxWords, vecQuestions, word_seman, encode_seman, name_embed
 
 
 class BiLSTM(nn.Module):

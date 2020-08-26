@@ -26,6 +26,7 @@ class BatchLoaderGqa:
             data_params['vocab_question_file'])
         self.T_encoder = data_params['T_encoder']
         self.N_encoder = data_params['N_encoder']
+        self.O_encoder = data_params['O_encoder']
         # peek one example to see whether answer is in the data
         self.load_answer = ('answer' in self.imdb[0])
         # the answer dict is always loaded, regardless of self.load_answer
@@ -45,7 +46,7 @@ class BatchLoaderGqa:
 
         self.load_spatial_feature = False
         self.load_objects_feature = False
-        self.load_scene_graph_feature = False
+        self.load_scene_graph_feature = True
         feature_type = data_params['feature_type']
         if feature_type == 'spatial':
             self.load_spatial_feature = True
@@ -82,10 +83,13 @@ class BatchLoaderGqa:
             self.scene_graph_loader = SceneGraphFeatureLoader(
                 scene_graph_file, vocab_name_file, vocab_attr_file,
                 max_num=self.objects_M)
+            if feature_type == 'scene_graph':
             # load one feature map to peek its size
-            x, _, _ = self.scene_graph_loader.load_feature_normalized_bbox(
-                self.imdb[0]['imageId'])
-            _, self.objects_D = x.shape
+                x, _, _ = self.scene_graph_loader.load_feature_normalized_bbox(
+                    self.imdb[0]['imageId'])
+                _, self.objects_D = x.shape
+            else:
+                self.load_scene_graph_feature = False
 
         self.se_max_len = -1
         self.se_zero_len = 0
@@ -120,12 +124,18 @@ class BatchLoaderGqa:
 
     def load_one_batch(self, sample_ids):
         actual_batch_size = len(sample_ids)
+
         input_seq_batch = np.zeros(
             (actual_batch_size, self.T_encoder), np.int32)
+        seq_length_batch = np.zeros(actual_batch_size, np.int32)
+
         input_seman_batch = np.zeros(
             (actual_batch_size, self.N_encoder), np.int32)
-        seq_length_batch = np.zeros(actual_batch_size, np.int32)
         seman_length_batch = np.zeros(actual_batch_size, np.int32)
+
+        input_name_batch = np.zeros((actual_batch_size, self.O_encoder), np.int32)
+        name_length_batch = np.zeros(actual_batch_size, np.int32)
+
         if self.load_spatial_feature:
             spatial_feat_batch = np.zeros(
                 (actual_batch_size, self.spatial_D, self.spatial_H,
@@ -154,16 +164,27 @@ class BatchLoaderGqa:
             if len(question_tokens) > self.T_encoder:
                 print('data reader: truncating question:\n\t' + question_str)
                 question_tokens = question_tokens[:self.T_encoder]
+
             question_inds = [
                 self.vocab_dict.word2idx(w) for w in question_tokens]
+            seq_length = len(question_inds)
+            input_seq_batch[n, :seq_length] = question_inds
+            seq_length_batch[n] = seq_length
+
             seman_inds = [
                 self.vocab_dict.word2idx(w) for w in semans]
-            seq_length = len(question_inds)
             seman_length = len(seman_inds)
-            input_seq_batch[n, :seq_length] = question_inds
             input_seman_batch[n, :seman_length] = seman_inds
-            seq_length_batch[n] = seq_length
             seman_length_batch[n] = seman_length
+
+            object_lists = self.scene_graph_loader.get_obects_name_list(iminfo['imageId'])
+            name_inds = [
+                self.scene_graph_loader.name_dict.word2idx(w) for w in object_lists if w != 'pokemon']
+            name_length = len(name_inds)
+            input_name_batch[n, :name_length] = name_inds
+            name_length_batch[n] = name_length
+                
+
             if self.load_spatial_feature:
                 feature = self.spatial_loader.load_feature(iminfo['imageId']) #2048 * 7 * 7
                 spatial_feat_batch[n:n+1] = feature
@@ -187,28 +208,32 @@ class BatchLoaderGqa:
             if self.load_answer:
                 answer_idx = self.answer_dict.word2idx(iminfo['answer'])
                 answer_label_batch[n] = answer_idx
+
         batch = dict(input_seq_batch=input_seq_batch,
                      seq_length_batch=seq_length_batch,
                      input_seman_batch=input_seman_batch,
                      seman_length_batch=seman_length_batch,
+                     input_name_batch=input_name_batch,
+                     name_length_batch=name_length_batch,
                      answer_label_batch=answer_label_batch,
                      qid_list=qid_list, qstr_list=qstr_list,
                      imageid_list=imageid_list)
+
         if self.load_spatial_feature:
             # NCHW -> NHWC
-            spatial_feat_batch = spatial_feat_batch.transpose((0, 2, 3, 1)) #128 * 7 * 7 * 2048
+            spatial_feat_batch = spatial_feat_batch.transpose((0, 2, 3, 1))
             batch['spatial_feat_batch'] = spatial_feat_batch
             if self.add_pos_enc:
                 # add positional embedding to the image features
                 pos_enc_tile = np.tile(
-                    self.pos_enc, (len(spatial_feat_batch), 1, 1, 1)) #1 * 7 * 7 * 64 -> 128 * 7 * 7 * 64
+                    self.pos_enc, (len(spatial_feat_batch), 1, 1, 1))
                 image_feat_batch = np.concatenate(
                      (spatial_feat_batch, pos_enc_tile), axis=-1)
             else:
                 image_feat_batch = spatial_feat_batch
-            N, H, W, C = image_feat_batch.shape # 128 7 7 2112
-            image_feat_batch = image_feat_batch.reshape((N, H*W, C)) #128 * 49 * 2112
-            image_valid_batch = np.ones(image_feat_batch.shape[:-1], np.bool) # 128 * 49
+            N, H, W, C = image_feat_batch.shape
+            image_feat_batch = image_feat_batch.reshape((N, H*W, C))
+            image_valid_batch = np.ones(image_feat_batch.shape[:-1], np.bool)
         if self.load_objects_feature or self.load_scene_graph_feature:
             batch['objects_feat_batch'] = objects_feat_batch
             batch['objects_bbox_batch'] = objects_bbox_batch
@@ -223,8 +248,10 @@ class BatchLoaderGqa:
             else:
                 image_feat_batch = objects_feat_batch
             image_valid_batch = objects_valid_batch
+
         batch['image_feat_batch'] = image_feat_batch
         batch['image_valid_batch'] = image_valid_batch
+
         return batch
 
 

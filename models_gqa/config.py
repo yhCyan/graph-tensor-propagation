@@ -24,7 +24,7 @@ __C.fp16_opt_level = "O1"
 __C.warmup_steps = 13000
 __C.logging_steps = 500
 __C.weight_decay = 1e-2
-__C.DEBUG = False # when you want to debug the code, can set the flag to True
+__C.DEBUG = False# when you want to debug the code, can set the flag to True
 __C.SNAPSHOT_FILE = '/home/xdjf/graph-tensor-propagation/exp_gqa/pytorch_ckpt/%s/%04d.ckpt'
 
 __C.VOCAB_QUESTION_FILE = '/home/xdjf/graph-tensor-propagation/exp_gqa/data/vocabulary_gqa.txt'
@@ -52,6 +52,7 @@ __C.W_FEAT = 100  # the maximum number of objects
 __C.D_FEAT = 2112  # 2048+64
 __C.T_ENCODER = 30
 __C.N_ENCODER = 12
+__C.O_ENCODER = 37
 __C.ADD_POS_ENC = True
 __C.PE_DIM = 64
 __C.PE_SCALE = 1.
@@ -71,7 +72,7 @@ __C.CMD_INPUT_ACT = 'ELU'
 __C.CTX_DIM = 512
 __C.OUT_QUESTION_MUL = True
 __C.OUT_CLASSIFIER_DIM = 512
-
+__C.NAME_DIM = 768
 __C.USE_EMA = True
 __C.EMA_DECAY_RATE = 0.999
 
@@ -94,7 +95,7 @@ __C.MASK_PADUNK_IN_LOGITS = True
 # --------------------------------------------------------------------------- #
 __C.TRAIN = AttrDict()
 __C.TRAIN.SPLIT_VQA = 'train_balanced'
-__C.TRAIN.BATCH_SIZE = 128
+__C.TRAIN.BATCH_SIZE = 64
 __C.TRAIN.START_EPOCH = 0
 __C.TRAIN.LOSS_TYPE = 'softmax'
 __C.TRAIN.CLIP_GRADIENTS = True

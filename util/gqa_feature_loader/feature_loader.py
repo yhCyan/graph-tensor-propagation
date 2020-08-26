@@ -98,6 +98,7 @@ class SceneGraphFeatureLoader:
         self.num_attr = self.attr_dict.num_vocab
         self.max_num = max_num
 
+
     def load_feature_normalized_bbox(self, imageId):
         sg = self.SGs[imageId]
         num = len(sg['objects'])
@@ -128,6 +129,16 @@ class SceneGraphFeatureLoader:
         valid = get_valid(len(bbox), num)
 
         return feature, normalized_bbox, valid
+
+    def get_obects_name_list(self, imageId):
+        sg = self.SGs[imageId]
+        num = len(sg['objects'])
+        object_names = []
+        for k, v in sg['objects'].items():
+            object_names.append(v['name'])
+
+        return list(set(object_names))
+
 
 
 def get_valid(total_num, valid_num):

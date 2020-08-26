@@ -13,7 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 from apex.parallel import DistributedDataParallel as DDP
 from apex import amp
 
-sys.path.append('../')
+sys.path.append('..')
 from models_gqa.model import LCGNwrapper
 from models_gqa.config import build_cfg_from_argparse
 from util.gqa_train.data_reader import DataReader
@@ -41,6 +41,7 @@ def load_train_data(cfg, rank, gpu, max_num=0, num_replicas=1):
         vocab_question_file=cfg.VOCAB_QUESTION_FILE,
         T_encoder=cfg.T_ENCODER,
         N_encoder=cfg.N_ENCODER,
+        O_encoder = cfg.O_ENCODER,
         vocab_answer_file=cfg.VOCAB_ANSWER_FILE,
         feature_type=cfg.FEAT_TYPE,
         spatial_feature_dir=cfg.SPATIAL_FEATURE_DIR,
@@ -68,11 +69,17 @@ def batch_to_data(batch):
         batch['seman_length_batch'].astype(np.int64)).cuda() # 128
     answerIndices = torch.from_numpy(
         batch['answer_label_batch'].astype(np.int64)).cuda() # 128
+    nameIndices = torch.from_numpy(
+        batch['input_name_batch'].astype(np.int64)).cuda()
+    nameLengths = torch.from_numpy(
+        batch['name_length_batch'].astype(np.int64)).cuda()
     images = torch.from_numpy(
         batch['image_feat_batch'].astype(np.float32)).cuda() # 128 * 49 * 2112
     imagesObjectNum = torch.from_numpy(
         np.sum(batch['image_valid_batch'].astype(np.int64), axis=1)).cuda() # 128
-    return (questionIndices, questionLengths, semanIndices, semanLengths, answerIndices, images, imagesObjectNum)
+
+
+    return (questionIndices, questionLengths, semanIndices, semanLengths, answerIndices, nameIndices, nameLengths, images, imagesObjectNum)
 
 def run_train_on_data(model, data_reader_train, cfg, rank, gpu, run_eval=False,
                       data_reader_eval=None):
@@ -143,6 +150,7 @@ def load_eval_data(cfg, rank, gpu, max_num=0):
         vocab_question_file=cfg.VOCAB_QUESTION_FILE,
         T_encoder=cfg.T_ENCODER,
         N_encoder=cfg.N_ENCODER,
+        O_encoder = cfg.O_ENCODER,
         vocab_answer_file=cfg.VOCAB_ANSWER_FILE,
         feature_type=cfg.FEAT_TYPE,
         spatial_feature_dir=cfg.SPATIAL_FEATURE_DIR,
